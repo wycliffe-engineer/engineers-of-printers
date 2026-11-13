@@ -5,6 +5,7 @@ export async function onRequestGet({ env }) {
       payments.invoice_id,
       payments.amount,
       payments.payment_method,
+      payments.transaction_reference,
       payments.payment_date,
       invoices.invoice_number,
       customers.full_name AS customer_name
@@ -43,7 +44,8 @@ export async function onRequestPost({ request, env }) {
     }
 
     const paymentAmount = Number(data.amount);
-    const balance = Number(invoice.amount) - Number(invoice.amount_paid);
+    const balance =
+      Number(invoice.amount) - Number(invoice.amount_paid || 0);
 
     if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
       return Response.json(
@@ -54,27 +56,42 @@ export async function onRequestPost({ request, env }) {
 
     if (paymentAmount > balance) {
       return Response.json(
-        { error: "Payment cannot exceed the outstanding balance." },
+        { error: "Payment exceeds the outstanding balance." },
         { status: 400 }
       );
     }
 
     const paymentDate = new Date().toISOString().split("T")[0];
 
+    const transactionReference =
+      data.transaction_reference ||
+      "MANUAL-" + Date.now();
+
     await env.DB.prepare(`
       INSERT INTO payments
-      (invoice_id, amount, payment_method, payment_date)
-      VALUES (?, ?, ?, ?)
+      (
+        invoice_id,
+        amount,
+        payment_method,
+        transaction_reference,
+        payment_date
+      )
+      VALUES (?, ?, ?, ?, ?)
     `).bind(
       data.invoice_id,
       paymentAmount,
       data.payment_method,
+      transactionReference,
       paymentDate
     ).run();
 
-    const newAmountPaid = Number(invoice.amount_paid) + paymentAmount;
+    const newAmountPaid =
+      Number(invoice.amount_paid || 0) + paymentAmount;
+
     const newStatus =
-      newAmountPaid >= Number(invoice.amount) ? "Paid" : "Partial";
+      newAmountPaid >= Number(invoice.amount)
+        ? "Paid"
+        : "Partial";
 
     await env.DB.prepare(`
       UPDATE invoices
@@ -88,7 +105,8 @@ export async function onRequestPost({ request, env }) {
 
     return Response.json({
       success: true,
-      message: "Payment recorded successfully."
+      message: "Payment recorded successfully.",
+      transaction_reference: transactionReference
     });
 
   } catch (error) {
